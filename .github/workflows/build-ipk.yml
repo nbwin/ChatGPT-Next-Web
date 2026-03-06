@@ -16,18 +16,27 @@ jobs:
     - name: 检出当前仓库
       uses: actions/checkout@v4
 
-    - name: 初始化编译环境
+    - name: 初始化编译环境并清理磁盘
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
         sudo docker image prune --all --force
         sudo -E apt-get -qq update
+        # 💡 这里已经删除了报错的 rsmsync，保留了 Lean 源码所需的全部原生安全依赖
         sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
+
+    - name: 🛡️ 挂载 10GB 虚拟内存 (防 OOM 杀进程)
+      run: |
+        sudo fallocate -l 10G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
 
     - name: 拉取 OpenWrt 源码
       working-directory: /workdir
@@ -48,34 +57,40 @@ jobs:
         CONFIG_TARGET_mediatek=y
         CONFIG_TARGET_mediatek_mt7986=y
         CONFIG_TARGET_mediatek_mt7986_DEVICE_xiaomi_redmi-router-ax6000=y
-        # 注意这里是 =m，代表编译成独立的 .ipk 文件，而不是打进固件里
+        # =m 代表仅编译为独立的 .ipk 安装包
         CONFIG_PACKAGE_luci-app-ssr-plus=m
         EOF
         make defconfig
 
-    - name: 下载依赖包
+    - name: 下载编译所需的代码与依赖包
       working-directory: /workdir/openwrt
       run: |
         make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
 
-    - name: 仅编译该插件及其所有依赖 (耗时约 40 分钟)
+    - name: 🧱 预编译底层工具与工具链 (解决并发依赖报错)
       working-directory: /workdir/openwrt
       run: |
-        # 编译插件时，系统会自动先编译出针对 AX6000 的交叉编译工具链 (Toolchain)，这步最花时间
-        # 然后自动寻找 ssr-plus 的所有前置依赖进行编译
+        # 强制按顺序打地基，彻底根除 ld-musl.so 找不到的报错
+        make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+        make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+
+    - name: 🚀 仅编译插件及其全部依赖 (稳如老狗版)
+      working-directory: /workdir/openwrt
+      run: |
         make package/luci-app-ssr-plus/compile -j$(nproc) || make package/luci-app-ssr-plus/compile -j1 V=s
 
-    - name: 收集所有生成的 IPK 文件
+    - name: 📦 收集所有生成的 IPK 文件
       id: organize
       working-directory: /workdir/openwrt
       run: |
-        # 找到所有生成的 ipk 文件并将它们移动到一个统一的文件夹中
         mkdir -p /workdir/ipk_output
         find bin/packages/ -name "*.ipk" -exec cp {} /workdir/ipk_output/ \;
         find bin/targets/ -name "*.ipk" -exec cp {} /workdir/ipk_output/ \;
         echo "IPK_DIR=/workdir/ipk_output" >> $GITHUB_ENV
 
-    - name: 上传 IPK 安装包
+    - name: ☁️ 上传 IPK 安装包至 GitHub
       uses: actions/upload-artifact@v4
       with:
         name: ssr-plus_and_dependencies_AX6000
