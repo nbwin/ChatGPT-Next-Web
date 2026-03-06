@@ -23,7 +23,6 @@ jobs:
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
         sudo docker image prune --all --force
         sudo -E apt-get -qq update
-        # 💡 已剔除失效的 rsmsync 依赖
         sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
@@ -33,7 +32,6 @@ jobs:
 
     - name: 🛡️ 挂载 10GB 虚拟内存 (防 OOM 杀进程)
       run: |
-        # 💡 使用 dd 替代 fallocate，彻底解决 Text file busy 报错
         sudo swapoff /swapfile || true
         sudo rm -f /swapfile
         sudo dd if=/dev/zero of=/swapfile bs=1M count=10240
@@ -73,12 +71,15 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
-    - name: 🧱 预编译底层工具与工具链 (解决并发依赖报错)
+    - name: 🧱 预编译底层工具、工具链与内核 (打好所有地基)
       working-directory: /workdir/openwrt
       run: |
-        # 💡 强制按顺序打地基，彻底根除 ld-musl.so 找不到的报错 (此步骤耗时较长，请耐心等待)
+        # 1. 编译基础工具
         make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+        # 2. 编译交叉工具链
         make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+        # 3. 💡 新增：编译目标平台的 Linux 内核，彻底解决 cryptodev 等 kmod 依赖报错
+        make target/compile -j$(nproc) || make target/compile -j1 V=s
 
     - name: 🚀 仅编译插件及其全部依赖 (稳如老狗版)
       working-directory: /workdir/openwrt
